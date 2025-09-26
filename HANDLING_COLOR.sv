@@ -1,0 +1,84 @@
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                                                                                         //
+//                                                                                                         //
+//    -+++==-          -*****+                                                                             //
+//     *%###-          .@@@@@-                                                                             //
+//      +*++=.         *@@@@-                                                                              //
+//       ====-        +%%%%=                                                                               //
+//       .====-      -####=  :++++++++++++   -++++++++=-.         :=+****+-.      .+++:       =++=         //
+//        .=+++=    :+++*-   -%%%%%%%%%%%#   +%%%%%%%%%%%#-     =#%%%%##%%%%*:    :%%%%=      #%%#         //
+//         :***#=  .====-                    =%%%:   .:*%%%-  .#%%%+:   .-*%%%+   :%%%%%*:    *%%#         //
+//          -%###=.===-:                     =%%%.     .%%%*  *%%%:        +%%%-  :%%%%%%%=   *%%#         //
+//           =%%%#**++-      -%%%%%%%%%%%#   =%%%.     =%%%= .%%%+          #%%*  :%%%==%%%*. *%%#         //
+//            =@%%###+       :++++++++++++   =%%%*****#%%%+  .%%%+         .%%%*  :%%%- :#%%%=#%%#         //
+//             +@%%%#.                       =%%%####%%%*.    *%%%-        *%%%:  :%%%=   =%%%%%%#         //
+//              *@@%:         ............   =%%%:   =%%%=     *%%%*-:..:=#%%%-   :%%%=    :#%%%%#         //
+//               #@:         =@%%%%%%%%%%%   +%%%.    :#%@*.    -*%%%%%%%%%#+.    :%%@=      +%%%#         //
+//               .:          .------------   :---      .--=:      .:-=+==-:        ---.       :---         //
+//                                                                                                         //
+//     :- :: -: : :: -.. :- ::   : -... - .-...     .. -. - ::.. -: :.  . -: -: :: : :- : : :: -:          //
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Company: Veron Group                                                                                    //
+// Author:  RTL DN team                                                                                    //
+//                                                                                                         //
+// Create Date:    20/09/2025                                                                              //
+// Module Name:    HANDLING_COLOR                                                                          //
+// Revision History:                                                                                       //
+// Revision 0.01 - File Created (Author)                                                                   //
+// Revision 0.02 - modified to work with Cyclone10 board                                                   //
+// Property of Veron Group                                                                                 //
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+module HANDLING_COLOR (
+    input wire          clk,
+    input wire          rst_n,
+    input wire [15:0]   clear_data,
+    input wire [15:0]   red_data,
+    input wire [15:0]   green_data,
+    input wire [15:0]   blue_data,
+    input wire          data_valid,
+
+    output reg          BLUE,
+    output reg          GREEN,
+    output reg          RED,
+    output reg          WHITE
+);
+
+// Percent thresholds (0–100)
+localparam RED_DOMINANT   = 70;   // Red is strong if >= 70%
+localparam GREEN_DOMINANT = 70;   // Green is strong if >= 70%
+localparam BLUE_DOMINANT  = 70;   // Blue is strong if >= 70%
+localparam COLOR_THRESH   = 30;   // Other colors should be <= 30%
+localparam CLEAR_MIN      = 16'h0030; // Minimum clear_data level to detect color
+
+// Compute percent of each color compared to Clear
+// Note: we add +1 to Clear to avoid divide-by-zero
+wire [15:0] red_ratio   = (red_data   * 100) / (clear_data + 1);
+wire [15:0] green_ratio = (green_data * 100) / (clear_data + 1);
+wire [15:0] blue_ratio  = (blue_data  * 100) / (clear_data + 1);
+
+always @(posedge clk or negedge rst_n) begin
+    if (~rst_n) begin
+        RED     <= 0;
+        GREEN   <= 0;
+        BLUE    <= 0;
+        WHITE <= 0;
+    end else if (data_valid) begin
+        // Reset outputs trước
+        RED     <= 0;
+        GREEN   <= 0;
+        BLUE    <= 0;
+        WHITE <= 0;
+		if  (blue_data == green_data && green_data > red_data)
+		    BLUE     <= 1;
+		else if (green_data > red_data && red_data > blue_data)
+		    GREEN    <= 1;
+		else if (red_data > green_data && green_data > blue_data)
+		    RED      <= 1;
+		else
+		    WHITE  <= 1;
+	
+        end
+    end
+
+endmodule
