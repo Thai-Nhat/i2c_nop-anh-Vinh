@@ -39,20 +39,20 @@ module I2C_INTERFACE#(
 )(
     input   wire                                        clock,
     input   wire                                        reset_n,
+    input   wire                                        pll_clk_300k,   // ADD: 300 kHz clock from PLL
+    input   wire                                        pll_locked,     // ADD (optional)
     input   wire                                        enable,
     input   wire                                        read_write,
     input   wire    [(NUMBER_OF_DATA_BYTES*8)-1:0]      mosi_data,
     input   wire    [(NUMBER_OF_REGISTER_BYTES*8)-1:0]  register_address,
     input   wire    [ADDRESS_WIDTH-1:0]                 device_address,
-    input   wire                                        pll_clk_300k,   // ADD: 300 kHz clock from PLL
-    input   wire                                        pll_locked,     // ADD (optional)
 
 
     output  reg     [(NUMBER_OF_DATA_BYTES*8)-1:0]      miso_data,
     output  logic                                       busy,
 
-    inout                                               external_serial_data,
-    inout                                               external_serial_clock
+    inout                                               sda,
+    inout                                               scl
 );
 
 localparam DATA_WIDTH                   = (NUMBER_OF_DATA_BYTES         != 0)   ? (NUMBER_OF_DATA_BYTES     * 8) : 8;
@@ -60,12 +60,12 @@ localparam REGISTER_WIDTH               = (NUMBER_OF_REGISTER_BYTES     != 0)   
 localparam MAX_NUMBER_BYTES             = (DATA_WIDTH > REGISTER_WIDTH)         ? (DATA_WIDTH/8) : (REGISTER_WIDTH/8);
 localparam CLOCK_STRETCHING_TIMER_WIDTH = (CLOCK_STRETCHING_MAX_COUNT   != 0)   ? $clog2(CLOCK_STRETCHING_MAX_COUNT) : 1;
 
-wire            timeout_cycle_timer_clock;
-wire            timeout_cycle_timer_reset_n;
-wire            timeout_cycle_timer_enable;
-logic           timeout_cycle_timer_load_count;
-wire  [15:0]    timeout_cycle_timer_count;
-wire            timeout_cycle_timer_expired;
+wire            timeout_wait_time_clock;
+wire            timeout_wait_time_reset_n;
+wire            timeout_wait_time_enable;
+logic           timeout_wait_time_load_count;
+wire  [15:0]    timeout_wait_time_count;
+wire            timeout_wait_time_expired;
 
 wire divider_tick = divider_tick_r;
 wire safe_reset_n = reset_n & pll_locked;  // use this if you have 'pll_locked'
@@ -119,19 +119,22 @@ logic                                       serial_clock_output_enable;
 logic   [$clog2(MAX_NUMBER_BYTES)-1:0]      _byte_counter;
 reg     [$clog2(MAX_NUMBER_BYTES)-1:0]      byte_counter;
 
-reg     [CLOCK_STRETCHING_TIMER_WIDTH-1:0] counter;
-logic   [CLOCK_STRETCHING_TIMER_WIDTH-1:0] _counter;
+reg     [CLOCK_STRETCHING_TIMER_WIDTH-1:0]  counter;
+logic   [CLOCK_STRETCHING_TIMER_WIDTH-1:0]  _counter;
 
 
-assign external_serial_clock        = (serial_clock_output_enable)  ? serial_clock : 1'bz;
-assign external_serial_data         = (serial_data_output_enable)   ? serial_data  : 1'bz;
+assign scl          = (serial_clock_output_enable)  ? serial_clock : 1'bz;
+assign sda          = (serial_data_output_enable)   ? serial_data  : 1'bz;
 
-assign timeout_cycle_timer_clock    = clock;
-assign timeout_cycle_timer_reset_n  = reset_n;
-assign timeout_cycle_timer_enable   = (CLOCK_STRETCHING_MAX_COUNT != 0) ? divider_tick : 0;
-assign timeout_cycle_timer_count    = CLOCK_STRETCHING_MAX_COUNT;
+assign timeout_wait_time_clock      = clock;
+assign timeout_wait_time_reset_n    = reset_n;
+assign timeout_wait_time_enable     = (CLOCK_STRETCHING_MAX_COUNT != 0) ? divider_tick : 0;
+assign timeout_wait_time_count      = CLOCK_STRETCHING_MAX_COUNT;
 
 
+//===========================================================================
+//=============================== CYCLONE PLL ===============================
+//===========================================================================
 // ==================== PLL-to-system clock synchronizer ====================
 // Goal: sync pll_clk_300k to the 'clock' domain (the FSM system clock)
 reg [2:0] pll_sync;
@@ -157,7 +160,9 @@ end
 
 
 
-
+//===========================================================================
+//==================== FSM I2C TRANSACTION HANDLER ==========================
+//===========================================================================
 always_comb begin
     _state                          = state;
     _post_state                     = post_state;
@@ -174,7 +179,7 @@ always_comb begin
     _serial_clock                   = serial_clock;
     _post_serial_data               = post_serial_data;
     _byte_counter                   = byte_counter;
-    timeout_cycle_timer_load_count  = 0;
+    timeout_wait_time_load_count    = 0;
     serial_data_output_enable       = 1;
     busy                            = (state == S_IDLE) ? 0 : 1;
 
@@ -186,7 +191,7 @@ always_comb begin
     end
 
     if (process_counter == 0) begin
-        timeout_cycle_timer_load_count  = 1;
+        timeout_wait_time_load_count = 1;
     end
 
     case (state)
@@ -260,12 +265,12 @@ always_comb begin
                     1: begin
                         //check for clock stretching
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _process_counter    = 2;
                             _state              = S_WRITE_ADDR_W;
                         end
@@ -308,13 +313,13 @@ always_comb begin
                     end
                     1: begin
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
                         //check for clock stretching
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _last_acknowledge   = 0;
                             _process_counter    = 2;
                         end
@@ -322,7 +327,7 @@ always_comb begin
                     2: begin
                         _serial_clock   = 0;
 
-                        if (external_serial_data == 0) begin
+                        if (sda == 0) begin
                             _last_acknowledge   = 1;    
                         end
                         _process_counter    = 3;
@@ -354,13 +359,13 @@ always_comb begin
                     end
                     1: begin
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
                         //check for clock stretching
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _last_acknowledge   = 0;
                             _process_counter    = 2;
                         end
@@ -417,13 +422,13 @@ always_comb begin
                     end
                     1: begin
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
                         //check for clock stretching
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _last_acknowledge   = 0;
                             _process_counter    = 2;
                         end
@@ -504,13 +509,13 @@ always_comb begin
                     end
                     1: begin
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
                         //check for clock stretching
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _last_acknowledge   = 0;
                             _process_counter    = 2;
                         end
@@ -555,13 +560,13 @@ always_comb begin
                     end
                     1: begin
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
                         //check for clock stretching
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _last_acknowledge   = 0;
                             _process_counter    = 2;
                         end
@@ -569,7 +574,7 @@ always_comb begin
                     2: begin
                         _serial_clock               = 0;
                         //sample data on this rising edge of scl
-                        _miso_data[0]               = external_serial_data;
+                        _miso_data[0]               = sda;
                         _miso_data[DATA_WIDTH-1:1]  = miso_data[DATA_WIDTH-2:0];
                         _bit_counter                = bit_counter - 1;
                         _process_counter            = 3;
@@ -605,13 +610,13 @@ always_comb begin
                     end
                     1: begin
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
                         //check for clock stretching
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _last_acknowledge   = 0;
                             _process_counter    = 2;
                         end
@@ -639,13 +644,13 @@ always_comb begin
                     end
                     1: begin
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
                         //check for clock stretching
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _last_acknowledge   = 0;
                             _process_counter    = 2;
                         end
@@ -671,13 +676,13 @@ always_comb begin
                     end
                     1: begin
                         if (CLOCK_STRETCHING_MAX_COUNT != 0) begin
-                            if (timeout_cycle_timer_expired) begin
+                            if (timeout_wait_time_expired) begin
                                 _process_counter    = 0;
                                 _state              = S_IDLE;
                             end
                         end
                         //check for clock stretching
-                        if (external_serial_clock || !CHECK_FOR_CLOCK_STRETCHING) begin
+                        if (scl || !CHECK_FOR_CLOCK_STRETCHING) begin
                             _last_acknowledge   = 0;
                             _process_counter    = 2;
                         end
@@ -732,20 +737,22 @@ always_ff @(posedge clock) begin
     end
  end
 
- 
+
+//===========================================================================
+//=============================== WAIT TIME =================================
+//===========================================================================
 always_comb begin
     _counter    =   counter;
-
     if (counter == 0) begin
-        timeout_cycle_timer_expired = 1;
+        timeout_wait_time_expired = 1;
     end
     else begin
-        timeout_cycle_timer_expired = 0;
+        timeout_wait_time_expired = 0;
     end
 
-    if (timeout_cycle_timer_enable) begin
-        if (timeout_cycle_timer_load_count) begin
-            _counter = timeout_cycle_timer_count;
+    if (timeout_wait_time_enable) begin
+        if (timeout_wait_time_load_count) begin
+            _counter = timeout_wait_time_count;
         end
         else begin
             if (counter == 0) begin

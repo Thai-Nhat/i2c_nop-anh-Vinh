@@ -36,7 +36,7 @@ module HANDLING_COLOR (
     input wire [15:0]   red_data,
     input wire [15:0]   green_data,
     input wire [15:0]   blue_data,
-    input wire          data_valid,
+    input wire          data_valid_data,
 
     output reg          BLUE,
     output reg          GREEN,
@@ -62,21 +62,21 @@ always @(posedge clk or negedge rst_n) begin
         RED     <= 0;
         GREEN   <= 0;
         BLUE    <= 0;
-        WHITE   <= 0;
+        WHITE <= 0;
     end else if (data_valid) begin
         // Reset outputs trước
         RED     <= 0;
         GREEN   <= 0;
         BLUE    <= 0;
-        WHITE   <= 0;
+        WHITE <= 0;
 		if  (blue_data == green_data && green_data > red_data)
-		    BLUE    <= 1;
+		    BLUE     <= 1;
 		else if (green_data > red_data && red_data > blue_data)
-		    GREEN   <= 1;
+		    GREEN    <= 1;
 		else if (red_data > green_data && green_data > blue_data)
-		    RED     <= 1;
+		    RED      <= 1;
 		else
-		    WHITE   <= 1;
+		    WHITE  <= 1;
 	
         end
     end
